@@ -32,8 +32,9 @@ STOCK_CODES: list[str] = [
 
 # ======================== 在此处填写查询时间范围 ========================
 # 格式：YYYY-MM-DD
-START_DATE = "2026-01-01"
-END_DATE = "2026-03-13"
+# 默认查询最近 90 天的数据
+START_DATE = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+END_DATE = datetime.now().strftime("%Y-%m-%d")
 
 # ======================== Excel 文件路径 ========================
 EXCEL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_records.xlsx")
@@ -46,13 +47,13 @@ def load_or_create_workbook(filepath: str, stock_codes: list[str]) -> openpyxl.W
         ws = wb.active
         # 检查是否需要追加新的股票代码列
         existing_codes = []
-        for col in range(2, ws.max_column + 1):
+        for col in range(2, (ws.max_column or 1) + 1):
             val = ws.cell(row=1, column=col).value
             if val:
                 existing_codes.append(str(val))
         for code in stock_codes:
             if code not in existing_codes:
-                new_col = ws.max_column + 1
+                new_col = (ws.max_column or 1) + 1
                 ws.cell(row=1, column=new_col, value=code)
         return wb
 
@@ -68,7 +69,7 @@ def load_or_create_workbook(filepath: str, stock_codes: list[str]) -> openpyxl.W
 def get_code_col_map(ws) -> dict[str, int]:
     """构建 {股票代码: 列号} 的映射。"""
     mapping = {}
-    for col in range(2, ws.max_column + 1):
+    for col in range(2, (ws.max_column or 1) + 1):
         val = ws.cell(row=1, column=col).value
         if val:
             mapping[str(val)] = col
@@ -78,7 +79,7 @@ def get_code_col_map(ws) -> dict[str, int]:
 def get_date_row_map(ws) -> dict[str, int]:
     """构建 {日期字符串: 行号} 的映射。"""
     mapping = {}
-    for row in range(2, ws.max_row + 1):
+    for row in range(2, (ws.max_row or 1) + 1):
         val = ws.cell(row=row, column=1).value
         if val:
             mapping[str(val).split(" ")[0]] = row
@@ -108,8 +109,13 @@ def fetch_and_write(stock_codes: list[str], start_date: str, end_date: str, file
 
     for code in stock_codes:
         print(f"正在获取 {code} 的数据...")
-        ticker = yf.Ticker(code)
-        hist = ticker.history(start=start_date, end=end_date)
+        try:
+            ticker = yf.Ticker(code)
+            hist = ticker.history(start=start_date, end=end_date)
+        except Exception as e:
+            print(f"  错误：获取 {code} 数据失败 - {e}")
+            all_data[code] = {}
+            continue
 
         if hist.empty:
             print(f"  警告：{code} 未获取到数据，请检查代码是否正确。")
@@ -125,7 +131,7 @@ def fetch_and_write(stock_codes: list[str], start_date: str, end_date: str, file
     # 第三步：确保所有日期都有对应行
     for date_str in all_dates:
         if date_str not in date_row:
-            new_row = ws.max_row + 1
+            new_row = (ws.max_row or 1) + 1
             ws.cell(row=new_row, column=1, value=date_str)
             date_row[date_str] = new_row
 
@@ -149,19 +155,26 @@ def fetch_and_write(stock_codes: list[str], start_date: str, end_date: str, file
                 ws.cell(row=target_row, column=col, value=code_data[date_str])
             else:
                 # 该股票在此日期无数据（停牌或该市场休市）
-                ws.cell(row=target_row, column=col, value="")
+                ws.cell(row=target_row, column=col, value="/")
             new_count += 1
 
     # 按日期排序（表头行除外）
     data_rows = []
-    for row in range(2, ws.max_row + 1):
-        data_rows.append([ws.cell(row=row, column=c).value for c in range(1, ws.max_column + 1)])
+    for row in range(2, (ws.max_row or 1) + 1):
+        data_rows.append([ws.cell(row=row, column=c).value for c in range(1, (ws.max_column or 1) + 1)])
     data_rows.sort(key=lambda r: str(r[0]) if r[0] else "")
     for i, row_data in enumerate(data_rows):
         for j, val in enumerate(row_data):
             ws.cell(row=i + 2, column=j + 1, value=val)
 
-    wb.save(filepath)
+    try:
+        wb.save(filepath)
+    except PermissionError:
+        print(f"\n错误：无法保存文件，请确认 {filepath} 未被其他程序占用。")
+        return
+    except Exception as e:
+        print(f"\n错误：保存文件失败 - {e}")
+        return
     print(f"\n完成！新写入 {new_count} 条，跳过已有 {skip_count} 条。")
     print(f"文件保存至：{filepath}")
 
